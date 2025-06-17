@@ -1,0 +1,4 @@
+simoptions.gridinterplayer=0;
+time_vfi = 2.341596 
+time_distrib = 0.059264 
+time_stats = 1.680910 

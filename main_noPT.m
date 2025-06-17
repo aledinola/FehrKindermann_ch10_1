@@ -1,5 +1,6 @@
 %% Fehr and Kindermann chapter 10.1
-
+% Same model as in main.m but here I include the permanent income type
+% theta as a second markov shock
 clear,clc,close all
 addpath(genpath('C:\Users\aledi\Documents\GitHub\VFIToolkit-matlab'))
 
@@ -19,21 +20,15 @@ Params.J=100-Params.agejshifter; % =81, Number of period in life-cycle
 % Grid sizes to use
 n_d = 0; % Endogenous labour choice (fraction of time worked)
 n_a = 350; % Endogenous asset holdings
-n_z = 7; % Exogenous labor productivity units shocks, persistent and transitiory
-N_i = 2; % Permanent type of agents
+n_z = [7,2]; % z1= Exogenous labor productivity shock,z2=theta (Perm. Type)
 N_j = Params.J; % Number of periods in finite horizon
 
 %% The parameter that depends on the permanent type
 % Fixed-effect (parameter that varies by permanent type)
 
-sig2_theta = 0.242;
-Params.theta_i=exp([-sqrt(sig2_theta),sqrt(sig2_theta)]);
-
-PTypeDistParamNames={'dist_theta_i'};
-Params.dist_theta_i=[0.5,0.5]; % Must sum to one
-% Note: this is not relevant to solving the value function, but is needed for
-% stationary distribition. It then gets encoded into the StationaryDist and
-% so is not needed for things like life-cycle profiles.
+sig2_theta   = 0.242;
+theta_i      = exp([-sqrt(sig2_theta),sqrt(sig2_theta)]);
+dist_theta_i = [0.5,0.5]; % Must sum to one
 
 %% Parameters
 
@@ -68,7 +63,7 @@ Params.repl_pen=0.5;
 Params.pension = Params.repl_pen*sum(Params.kappa_j)/(Params.Jr-1);
 
 % persistent AR(1) process on idiosyncratic labor productivity units
-Params.rho_z=0.985;
+Params.rho_z = 0.985;
 Params.sigma_epsilon_z=sqrt(0.022);
 
 % Conditional survival probabilities: sj is the probability of surviving to be age j+1, given alive at age j
@@ -98,9 +93,17 @@ a_min = 0;
 a_max = 600;
 a_grid=a_min+(a_max-a_min)*(linspace(0,1,n_a).^3)'; % The ^3 means most points are near zero, which is where the derivative of the value fn changes most.
 
-% First, the AR(1) process z
-[z_grid,pi_z]=discretizeAR1_Rouwenhorst(0,Params.rho_z,Params.sigma_epsilon_z,n_z);
-z_grid=exp(z_grid); % Take exponential of the grid
+% z1: AR(1) process for labor productivity
+[z_grid1,pi_z1]=discretizeAR1_Rouwenhorst(0,Params.rho_z,Params.sigma_epsilon_z,n_z(1));
+z_grid1=exp(z_grid1); % Take exponential of the grid
+
+% z2: Permanent income type (theta in FK notation)
+z_grid2 = theta_i';
+pi_z2   = eye(n_z(2));
+
+% Combine z1 and z2 into z
+z_grid = [z_grid1;z_grid2];
+pi_z = kron(pi_z2,pi_z1);
 
 % Grid for labour choice
 d_grid=[];
@@ -109,31 +112,24 @@ d_grid=[];
 DiscountFactorParamNames={'beta','sj'};
 
 % Notice: have added alpha_i to inputs (relative to Life-Cycle Model 11 which this extends)
-ReturnFn=@(aprime,a,z,agej,theta_i,kappa_j,w,gamma,Jr,pension,r) ...
-    f_ReturnFn(aprime,a,z,agej,theta_i,kappa_j,w,gamma,Jr,pension,r);
+ReturnFn=@(aprime,a,z1,theta_i,agej,kappa_j,w,gamma,Jr,pension,r) ...
+    f_ReturnFn(aprime,a,z1,theta_i,agej,kappa_j,w,gamma,Jr,pension,r);
 
 %% Now solve the value function iteration problem, just to check that things are working before we go to General Equilbrium
 disp('Test ValueFnIter')
 tic;
-
-[V, Policy]=ValueFnIter_Case1_FHorz_PType(n_d,n_a,n_z,N_j,N_i, d_grid, a_grid, z_grid, pi_z, ReturnFn, Params, DiscountFactorParamNames, vfoptions);
+[V, Policy]=ValueFnIter_Case1_FHorz(n_d,n_a,n_z,N_j,d_grid, a_grid, z_grid, pi_z, ReturnFn, Params, DiscountFactorParamNames, [],vfoptions);
 time_vfi = toc;
 
-% V is now a structure containing the value function for each permanent type
-V
-% So for example for permanent type 1, V_i(a,z,j)
-size(V.ptype001)
-% Policy likewise depends on type, e.g.,
-size(Policy.ptype001)
-% which is the same as
-[length(n_d)+length(n_a),n_a,n_z,N_j]
+% V(a,z1,z2,age)
 
 %% Initial distribution of agents at birth (j=1)
 % Before we plot the life-cycle profiles we have to define how agents are
 % at age j=1. We will give them all zero assets.
 jequaloneDist=zeros([n_a,n_z],'gpuArray'); % Put no households anywhere on grid
-jequaloneDist(1,floor((n_z+1)/2))=1; % All agents start with zero assets, 
-% and the median value of the shock
+% All agents start with zero assets, median value of the z1 shock and
+% distrib of PT for z2
+jequaloneDist(1,floor((n_z(1)+1)/2),:)=dist_theta_i; 
 
 % Anything that is not made to depend on the permanent type is
 % automatically assumed to be independent of the permanent type (that is,
@@ -152,7 +148,7 @@ Params.mewj=Params.mewj./sum(Params.mewj); % Normalize to one
 AgeWeightsParamNames={'mewj'}; % So VFI Toolkit knows which parameter is the mass of agents of each age
 
 tic
-StationaryDist=StationaryDist_Case1_FHorz_PType(jequaloneDist,AgeWeightsParamNames,PTypeDistParamNames,Policy,n_d,n_a,n_z,N_j,N_i,pi_z,Params,simoptions);
+StationaryDist=StationaryDist_FHorz_Case1(jequaloneDist,AgeWeightsParamNames,Policy,n_d,n_a,n_z,N_j,pi_z,Params,simoptions);
 time_distrib = toc;
 % Again, we will explain in a later model what the stationary distribution
 % is, it is not important for our current goal of graphing the life-cycle profile
@@ -160,14 +156,15 @@ time_distrib = toc;
 %% FnsToEvaluate are how we say what we want to graph the life-cycles of
 % Like with return function, we have to include (h,aprime,a,z) as first
 % inputs, then just any relevant parameters.
-FnsToEvaluate.earnings=@(aprime,a,z,w,kappa_j,theta_i) w*kappa_j*theta_i*z; 
-FnsToEvaluate.assets=@(aprime,a,z) a; % a is the current asset holdings
-FnsToEvaluate.consumption = @(aprime,a,z,agej,theta_i,kappa_j,w,Jr,pension,r) f_consumption(aprime,a,z,agej,theta_i,kappa_j,w,Jr,pension,r);
+FnsToEvaluate.earnings=@(aprime,a,z1,theta_i,w,kappa_j) w*kappa_j*theta_i*z1; 
+FnsToEvaluate.assets=@(aprime,a,z1,theta_i) a; % a is the current asset holdings
+FnsToEvaluate.consumption = @(aprime,a,z1,theta_i,agej,kappa_j,w,Jr,pension,r) ...
+    f_consumption(aprime,a,z1,theta_i,agej,kappa_j,w,Jr,pension,r);
 
 %% Calculate the life-cycle profiles
 simoptions.whichstats=[1,1,1,0,0,0,0];
 tic
-AgeStats=LifeCycleProfiles_FHorz_Case1_PType(StationaryDist, Policy, FnsToEvaluate, Params,n_d,n_a,n_z,N_j,N_i,d_grid, a_grid, z_grid, simoptions);
+AgeStats=LifeCycleProfiles_FHorz_Case1(StationaryDist, Policy, FnsToEvaluate, Params,[],n_d,n_a,n_z,N_j,d_grid,a_grid,z_grid,simoptions);
 time_stats=toc;
 
 % By default, this includes both the 'grouped' statistics, like
@@ -190,12 +187,12 @@ hold on
 plot(age_vec,AgeStats.consumption.Mean)
 legend('Earnings','Consumption')
 title('Life Cycle Profile: Labor Earnings')
-print('fig10_1_a','-dpng')
+print('fig10_1_a_noPT','-dpng')
 
 figure
 plot(age_vec,AgeStats.assets.Mean)
 title('Life Cycle Profile: Assets')
-print('fig10_1_b','-dpng')
+print('fig10_1_b_noPT','-dpng')
 
 figure
 plot(age_vec,coef_var.earnings)
@@ -203,7 +200,7 @@ hold on
 plot(age_vec,coef_var.consumption)
 legend('Earnings','Consumption')
 title('Coefficient of variation')
-print('fig10_1_c','-dpng')
+print('fig10_1_c_noPT','-dpng')
 
 
 fprintf('time_vfi = %f \n',time_vfi)
